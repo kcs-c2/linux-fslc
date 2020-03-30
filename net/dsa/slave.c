@@ -1294,7 +1294,7 @@ static int dsa_slave_phy_setup(struct net_device *slave_dev)
 	struct device_node *port_dn = dp->dn;
 	struct dsa_switch *ds = dp->ds;
 	u32 phy_flags = 0;
-	int mode, ret;
+	int mode, ret, addr;
 
 	mode = of_get_phy_mode(port_dn);
 	if (mode < 0)
@@ -1326,7 +1326,13 @@ static int dsa_slave_phy_setup(struct net_device *slave_dev)
 		/* We could not connect to a designated PHY or SFP, so try to
 		 * use the switch internal MDIO bus instead
 		 */
-		ret = dsa_slave_phy_connect(slave_dev, dp->index);
+
+		if (ds->ops->get_phy_address)
+			addr = ds->ops->get_phy_address(ds, dp->index);
+		else
+			addr = dp->index;
+
+		ret = dsa_slave_phy_connect(slave_dev, addr);
 	}
 	if (ret) {
 		netdev_err(slave_dev, "failed to connect to PHY: %pe\n",
