@@ -175,5 +175,9 @@ int mv88e6xxx_smi_init(struct mv88e6xxx_chip *chip,
 	chip->bus = bus;
 	chip->sw_addr = sw_addr;
 
+	chip->phy_base_addr = chip->info->phy_base_addr;
+	if (chip->info->dual_chip)
+		chip->phy_base_addr += sw_addr;
+
 	return 0;
 }

@@ -248,6 +248,7 @@ struct mv88e6xxx_chip {
 	const struct mv88e6xxx_bus_ops *smi_ops;
 	struct mii_bus *bus;
 	int sw_addr;
+	unsigned int phy_base_addr;
 
 	/* Handles automatic disabling and re-enabling of the PHY
 	 * polling unit.
