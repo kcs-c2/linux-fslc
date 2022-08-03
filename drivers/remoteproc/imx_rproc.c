@@ -41,7 +41,7 @@
 
 #define IMX7D_M4_START			(IMX7D_ENABLE_M4 | IMX7D_SW_M4P_RST \
 					 | IMX7D_SW_M4C_RST)
-#define IMX7D_M4_STOP			IMX7D_SW_M4C_NON_SCLR_RST
+#define IMX7D_M4_STOP			(IMX7D_ENABLE_M4 | IMX7D_SW_M4C_NON_SCLR_RST)
 
 /* Address: 0x020D8000 */
 #define IMX6SX_SRC_SCR			0x00
@@ -52,7 +52,7 @@
 
 #define IMX6SX_M4_START			(IMX6SX_ENABLE_M4 | IMX6SX_SW_M4P_RST \
 					 | IMX6SX_SW_M4C_RST)
-#define IMX6SX_M4_STOP			IMX6SX_SW_M4C_NON_SCLR_RST
+#define IMX6SX_M4_STOP			(IMX6SX_ENABLE_M4 | IMX6SX_SW_M4C_NON_SCLR_RST)
 #define IMX6SX_M4_RST_MASK		(IMX6SX_ENABLE_M4 | IMX6SX_SW_M4P_RST \
 					 | IMX6SX_SW_M4C_NON_SCLR_RST \
 					 | IMX6SX_SW_M4C_RST)
@@ -365,6 +365,76 @@ bool imx_rproc_ready(struct rproc *rproc)
 	return true;
 }
 
+static int imx_rproc_rebuild_channels(struct rproc *rproc)
+{
+	struct imx_rproc *priv = rproc->priv;
+	struct mbox_client *cl = &priv->cl;
+	struct device *dev = priv->dev;
+	int ret = 0;
+
+	if (!priv->tx_ch) {
+		priv->tx_ch = mbox_request_channel_byname(cl, "tx");
+		if (IS_ERR(priv->tx_ch)) {
+			ret = PTR_ERR(priv->tx_ch);
+			dev_err(dev, "failed to restart tx chan %d\n", ret);
+			priv->tx_ch = NULL;
+
+			goto err_exit;
+		}
+	}
+
+	if (!priv->rx_ch) {
+		priv->rx_ch = mbox_request_channel_byname(cl, "rx");
+		if (IS_ERR(priv->rx_ch)) {
+			ret = PTR_ERR(priv->rx_ch);
+			dev_err(dev, "failed to restart rx chan %d\n", ret);
+			priv->rx_ch = NULL;
+
+			goto err_exit;
+		}
+	}
+
+	if (!priv->rxdb_ch) {
+		priv->rxdb_ch = mbox_request_channel_byname(cl, "rxdb");
+		if (IS_ERR(priv->rxdb_ch)) {
+			ret = PTR_ERR(priv->rxdb_ch);
+			dev_err(dev, "failed to restart rxdb chan %d\n", ret);
+			priv->rxdb_ch = NULL;
+
+			goto err_exit;
+		}
+	}
+
+	/* txdb is optional */
+	if (!priv->txdb_ch) {
+		priv->txdb_ch = mbox_request_channel_byname(cl, "txdb");
+		if (IS_ERR(priv->txdb_ch))
+			priv->txdb_ch = NULL;
+	}
+
+err_exit:
+	return ret;
+}
+
+static void imx_rproc_free_channels(struct rproc *rproc)
+{
+	struct imx_rproc *priv = rproc->priv;
+	__u32 mmsg;
+
+	if (priv->txdb_ch)
+		mbox_send_message(priv->txdb_ch, (void *)&mmsg);
+
+	mbox_free_channel(priv->tx_ch);
+	mbox_free_channel(priv->rx_ch);
+	mbox_free_channel(priv->rxdb_ch);
+	mbox_free_channel(priv->txdb_ch);
+
+	priv->tx_ch = NULL;
+	priv->rx_ch = NULL;
+	priv->rxdb_ch = NULL;
+	priv->txdb_ch = NULL;
+}
+
 static int imx_rproc_start(struct rproc *rproc)
 {
 	struct imx_rproc *priv = rproc->priv;
@@ -376,6 +446,10 @@ static int imx_rproc_start(struct rproc *rproc)
 
 	if (priv->ipc_only) {
 		dev_info(dev, "%s: IPC only\n", __func__);
+		ret = imx_rproc_rebuild_channels(rproc);
+		if (ret < 0)
+			return -EINVAL;
+
 		/* To partition M4, we need block userspace stop/start */
 		if (priv->skip_fw_load_recovery) {
 			priv->skip_fw_load_recovery = false;
@@ -451,6 +525,8 @@ static int imx_rproc_stop(struct rproc *rproc)
 
 	if (priv->ipc_only) {
 		dev_info(dev, "%s: IPC only\n", __func__);
+		imx_rproc_free_channels(rproc);
+
 		/*
 		 * TO i.MX8 Paritioned M4, M4 reboot is handled by itself,
 		 * so we still keep early boot and skip fw load flag
@@ -1134,6 +1210,8 @@ static int imx_rproc_probe(struct platform_device *pdev)
 
 	spin_lock_init(&priv->mu_lock);
 
+	INIT_DELAYED_WORK(&(priv->rproc_work), imx_rproc_vq_work);
+
 	ret = imx_rproc_xtr_mbox_init(rproc);
 	if (ret) {
 		if (ret == -EPROBE_DEFER)
@@ -1156,8 +1234,6 @@ static int imx_rproc_probe(struct platform_device *pdev)
 		dev_err(&rproc->dev, "Failed to enable clock\n");
 		goto err_put_rproc;
 	}
-
-	INIT_DELAYED_WORK(&(priv->rproc_work), imx_rproc_vq_work);
 
 	ret = imx_rproc_db_channel_init(rproc);
 	if (ret)
@@ -1198,7 +1274,7 @@ static int imx_rproc_probe(struct platform_device *pdev)
 					 &priv->mub_partition))
 			priv->mub_partition = 3;
 
-		ret = imx_scu_irq_group_enable(5, BIT(priv->mub_partition),
+		ret = imx_scu_irq_group_enable(IMX_SC_IRQ_GROUP_REBOOTED, BIT(priv->mub_partition),
 					       true);
 		if (ret) {
 			dev_warn(dev, "Enable irq failed.\n");
@@ -1207,7 +1283,7 @@ static int imx_rproc_probe(struct platform_device *pdev)
 
 		ret = imx_scu_irq_register_notifier(&priv->proc_nb);
 		if (ret) {
-			imx_scu_irq_group_enable(5, BIT(priv->mub_partition),
+			imx_scu_irq_group_enable(IMX_SC_IRQ_GROUP_REBOOTED, BIT(priv->mub_partition),
 						 false);
 			dev_warn(dev, "reqister scu notifier failed.\n");
 			goto err_put_clk;

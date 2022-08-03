@@ -238,6 +238,15 @@
 
 &i2c1 {
 	status = "okay";
+
+	rtc@51 {
+		compatible = "nxp,pcf2129";
+		reg = <0x51>;
+	};
+};
+
+&i2c1 {
+	status = "okay";
 	rtc@51 {
 		compatible = "nxp,pcf2129";
 		reg = <0x51>;

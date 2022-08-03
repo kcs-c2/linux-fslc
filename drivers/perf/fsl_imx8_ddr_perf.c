@@ -35,7 +35,7 @@
 #define CNTL_CP_SHIFT		16
 #define CNTL_CP_MASK		(0xFF << CNTL_CP_SHIFT)
 #define CNTL_CSV_SHIFT		24
-#define CNTL_CSV_MASK		(0xFF << CNTL_CSV_SHIFT)
+#define CNTL_CSV_MASK		(0xFFU << CNTL_CSV_SHIFT)
 
 #define READ_PORT_SHIFT		0
 #define READ_PORT_MASK		(0x7 << READ_PORT_SHIFT)
@@ -803,8 +803,10 @@ static int ddr_perf_probe(struct platform_device *pdev)
 			return ret;
 	} else
 		return -EINVAL;
-	if (!name)
-		return -ENOMEM;
+    if (!name) {
+        ret = -ENOMEM;
+        goto cpuhp_state_err;
+    }
 
 	pmu->cpu = raw_smp_processor_id();
 	ret = cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN,

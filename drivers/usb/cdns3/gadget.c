@@ -103,6 +103,16 @@ u8 cdns3_ep_addr_to_index(u8 ep_addr)
 	return (((ep_addr & 0x7F)) + ((ep_addr & USB_DIR_IN) ? 16 : 0));
 }
 
+static int cdns3_get_dma_pos(struct cdns3_device *priv_dev,
+			     struct cdns3_endpoint *priv_ep)
+{
+	int dma_index;
+
+	dma_index = readl(&priv_dev->regs->ep_traddr) - priv_ep->trb_pool_dma;
+
+	return dma_index / TRB_SIZE;
+}
+
 /**
  * cdns3_next_request - returns next request from list
  * @list: list containing requests
@@ -590,6 +600,53 @@ static int cdns3_prepare_aligned_request_buf(struct cdns3_request *priv_req)
 	return 0;
 }
 
+static int cdns3_wa1_update_guard(struct cdns3_endpoint *priv_ep,
+				  struct cdns3_trb *trb)
+{
+	struct cdns3_device *priv_dev = priv_ep->cdns3_dev;
+
+	if (!priv_ep->wa1_set) {
+		u32 doorbell;
+
+		doorbell = !!(readl(&priv_dev->regs->ep_cmd) & EP_CMD_DRDY);
+
+		if (doorbell) {
+			priv_ep->wa1_cycle_bit = priv_ep->pcs ? TRB_CYCLE : 0;
+			priv_ep->wa1_set = 1;
+			priv_ep->wa1_trb = trb;
+			priv_ep->wa1_trb_index = priv_ep->enqueue;
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static void cdns3_wa1_tray_restore_cycle_bit(struct cdns3_device *priv_dev,
+					     struct cdns3_endpoint *priv_ep)
+{
+	int dma_index;
+	u32 doorbell;
+
+	doorbell = !!(readl(&priv_dev->regs->ep_cmd) & EP_CMD_DRDY);
+	dma_index = cdns3_get_dma_pos(priv_dev, priv_ep);
+
+	if (!doorbell || dma_index != priv_ep->wa1_trb_index)
+		cdns3_wa1_restore_cycle_bit(priv_ep);
+}
+
+static void cdns3_rearm_drdy_if_needed(struct cdns3_endpoint *priv_ep)
+{
+	struct cdns3_device *priv_dev = priv_ep->cdns3_dev;
+
+	if (priv_dev->dev_ver < DEV_VER_V3)
+		return;
+
+	if (readl(&priv_dev->regs->ep_sts) & EP_STS_TRBERR) {
+		writel(EP_STS_TRBERR, &priv_dev->regs->ep_sts);
+		writel(EP_CMD_DRDY, &priv_dev->regs->ep_cmd);
+	}
+}
+
 /**
  * cdns3_ep_run_transfer - start transfer on no-default endpoint hardware
  * @priv_ep: endpoint object
@@ -801,6 +858,7 @@ int cdns3_ep_run_transfer(struct cdns3_endpoint *priv_ep,
 		writel(EP_STS_TRBERR | EP_STS_DESCMIS, &priv_dev->regs->ep_sts);
 		__cdns3_gadget_wakeup(priv_dev);
 		writel(EP_CMD_DRDY, &priv_dev->regs->ep_cmd);
+		cdns3_rearm_drdy_if_needed(priv_ep);
 		trace_cdns3_doorbell_epx(priv_ep->name,
 					 readl(&priv_dev->regs->ep_traddr));
 	}
